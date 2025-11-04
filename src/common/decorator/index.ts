@@ -5,8 +5,18 @@ export const GetStudentId = createParamDecorator(
         data: unknown,
         context: ExecutionContext,
     ): Promise<string[]> => {
-        const request = context.switchToHttp().getRequest();                        
+        const request = context.switchToHttp().getRequest();
         const account = request.user._doc._id;
         return account;
+    },
+);
+
+export const GetUser = createParamDecorator(
+    async (
+        data: unknown,
+        context: ExecutionContext,
+    ): Promise<any> => {
+        const request = context.switchToHttp().getRequest();
+        return request.user;
     },
 );

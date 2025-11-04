@@ -1,0 +1,205 @@
+Backend edits summary (for dashboard integration)
+
+Roles and auth
+- Added Role enum: src/common/enums/role.enum.ts (Owner, Teacher, Student)
+- Roles decorator: src/common/decorator/roles.decorator.ts (uses Role enum)
+- RolesGuard: src/common/guards/roles.guard.ts (checks user.role)
+- JWT strategy: src/auth/jwt.strategy.ts (returns owner/teacher/student; removed admin special case)
+- Auth controller: src/auth/auth.controller.ts (removed POST auth/admin/login; kept student and teacher login)
+- Auth service: src/auth/auth.service.ts (teacherLogin issues Role.Owner when teacher.isOwner; removed generateAdminToken)
+
+Seeding (owner as teacher)
+- Seed module: src/seed/seed.module.ts
+- Seed service: src/seed/seed.service.ts (OnModuleInit creates/updates owner teacher; reads OWNER_USERNAME/OWNER_PASSWORD/OWNER_FULLNAME)
+- App module wiring: src/app.module.ts (imports SeedModule)
+
+Teachers
+- Schema: src/teachers/schemas/teacher.schema.ts (username, fullName, password, isActive, isOwner)
+- Service: src/teachers/teachers.service.ts (CRUD helpers, setActive, findByUsername)
+- Controller: src/teachers/teachers.controller.ts (owner-only endpoints)
+  - POST /teachers { username, fullName, password }
+  - GET /teachers
+  - PATCH /teachers/:id/activate
+  - PATCH /teachers/:id/deactivate
+- Module: src/teachers/teachers.module.ts
+- App wiring: src/app.module.ts (imports TeachersModule)
+- Auth wiring: src/auth/auth.module.ts (imports TeachersModule)
+
+Courses
+- Schema: src/courses/schemas/course.schema.ts (added teacher: ObjectId<Teacher>)
+- Service: src/courses/courses.service.ts
+  - create({ ...course, teacher }) → creates course (no auto code generation)
+  - findMineWithEnrollmentCounts(teacherId)
+- Controller: src/courses/courses.controller.ts
+  - POST /courses (Role.Teacher) → creates course only
+  - GET /courses/mine/with-counts (Role.Teacher)
+- Module: src/courses/courses.module.ts (removed CodesModule dependency)
+
+Codes (unlock codes)
+- Schema: src/codes/schemas/code.schema.ts (code, course:ObjectId<Course>, usedBy:ObjectId<Student>|null, usedAt:Date|null)
+- Service: src/codes/codes.service.ts
+  - generateForCourse(courseId, count=100) → generates codes for a course
+  - redeem(codeValue, studentId)
+  - countUsedByCourse(courseId)
+  - getActiveCodesForCourse(courseId) → returns unused codes
+  - getUsedCodesForCourse(courseId) → returns used codes with student info
+- Controller: src/codes/codes.controller.ts (owner-only endpoints)
+  - POST /codes/courses/:courseId/generate (Role.Owner) → generate codes for a course
+  - GET /codes/courses/:courseId/active (Role.Owner) → view active/unused codes
+  - GET /codes/courses/:courseId/used (Role.Owner) → view used codes with student details
+- Module: src/codes/codes.module.ts (includes CodesController)
+- App wiring: src/app.module.ts (imports CodesModule)
+
+Enrollments
+- Controller: src/enrollments/enrollments.controller.ts
+  - POST /enrollments/redeem (student) → redeem code and create enrollment
+- Module: src/enrollments/enrollments.module.ts (imports CodesModule)
+
+Shared helpers
+- Decorators: src/common/decorator/index.ts (added GetUser; existing GetStudentId retained)
+
+Notes
+- Owner replaces admin everywhere (no admin endpoints or role).
+- Owner account is just a Teacher with isOwner=true (seeded on startup).
+- Dashboard access:
+  - Owner (Role.Owner): manage teachers; generate codes for any course; view active/used codes per course
+  - Teacher (Role.Teacher): create courses (no codes); view own courses with enrollment counts
+
+API endpoints for dashboard (copy-paste ready)
+
+Auth
+- POST auth/login
+  Body: { universityId: string, password: string, deviceNumber: string }
+  Returns: { accessToken: string, student: object }
+- POST auth/teacher/login
+  Body: { username: string, password: string }
+  Returns: { accessToken: string, teacher: object }
+  Notes: teacher.role is 'owner' when isOwner=true, otherwise 'teacher'
+Headers (all protected)
+- Authorization: Bearer <accessToken>
+
+Owner-only (Role.Owner)
+- GET teachers
+  Returns: Teacher[]
+- POST teachers
+  Body: { username: string, fullName: string, password: string }
+  Returns: Teacher
+- PATCH teachers/:id/activate
+  Returns: Teacher
+- PATCH teachers/:id/deactivate
+  Returns: Teacher
+- POST codes/courses/:courseId/generate
+  Body: { count?: number } (default 100)
+  Returns: { codes: string[], count: number }
+- GET codes/courses/:courseId/active
+  Returns: Code[] (unused codes for the course)
+- GET codes/courses/:courseId/used
+  Returns: Code[] (used codes with populated usedBy student info)
+
+Teacher-only (Role.Teacher)
+- POST courses
+  Body: { name: string, description?: string, major: string, yearLevel: number, semester: 1|2 }
+  Returns: Course (no codes generated)
+- GET courses/mine/with-counts
+  Returns: Array<Course & { enrollments: number }>
+
+Student (Role.Student)
+- GET courses/with-availability?year=&semester=&major=
+  Returns: Array<Course & { isAvailable: boolean }>
+- POST enrollments/redeem
+  Body: { code: string }
+  Returns: Enrollment
+
+Content (use existing modules; secure to teachers/owner as needed)
+- Videos: use videos.controller.ts endpoints to create/update videos for a course (include course id)
+- Files: use files.controller.ts endpoints to upload files for a course (include course id)
+
+New/changed types (for dashboard typings)
+
+- Role enum (src/common/enums/role.enum.ts)
+  enum Role { Owner = 'owner', Teacher = 'teacher', Student = 'student' }
+
+- Teacher (src/teachers/schemas/teacher.schema.ts)
+  {
+    _id: ObjectId;
+    username: string;
+    fullName: string;
+    password: string;
+    isActive: boolean; // default true
+    isOwner: boolean;  // default false (true for platform owner)
+    createdAt: Date;
+    updatedAt: Date;
+  }
+
+- Course (src/courses/schemas/course.schema.ts)
+  {
+    _id: ObjectId;
+    name: string;
+    description?: string;
+    major: string;
+    yearLevel: number;
+    semester: 1 | 2;
+    teacher: ObjectId; // reference to Teacher
+    createdAt: Date;
+    updatedAt: Date;
+  }
+
+- Code (src/codes/schemas/code.schema.ts)
+  {
+    _id: ObjectId;
+    code: string;                  // unique unlock code
+    course: ObjectId;              // reference to Course
+    usedBy?: ObjectId | null;      // Student id or null
+    usedAt?: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }
+
+- Enrollment (existing schema, used in redeem response)
+  {
+    _id: ObjectId;
+    student: ObjectId;             // Student id
+    course: ObjectId;              // Course id
+    enrollDate?: Date;
+    isActive?: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }
+
+- Auth tokens payload (server-issued)
+  {
+    sub: string;                   // user id
+    role: Role;                    // 'owner' | 'teacher' | 'student'
+  }
+
+- POST /courses request body (teacher)
+  {
+    name: string;
+    description?: string;
+    major: string;
+    yearLevel: number;
+    semester: 1 | 2;
+  }
+
+- POST /courses response (teacher)
+  {
+    course: Course;                // codes are NOT generated automatically
+  }
+
+- POST /codes/courses/:courseId/generate request body (owner)
+  {
+    count?: number;                // optional, default 100
+  }
+
+- POST /codes/courses/:courseId/generate response (owner)
+  {
+    codes: string[];
+    count: number;
+  }
+
+- GET /codes/courses/:courseId/active response (owner)
+  Code[] (where usedBy is null)
+
+- GET /codes/courses/:courseId/used response (owner)
+  Code[] (where usedBy is populated with student info)
+
