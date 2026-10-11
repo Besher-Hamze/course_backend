@@ -24,6 +24,12 @@ export class Course {
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Teacher', required: true })
   teacher: Teacher;
 
+  @Prop()
+  coverSmall?: string;
+
+  @Prop()
+  coverLarge?: string;
+
   teacherName?: string;
 }
 
