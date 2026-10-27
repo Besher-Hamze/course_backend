@@ -13,6 +13,9 @@ import { CodesModule } from './codes/codes.module';
 import { SeedModule } from './seed/seed.module';
 import { StorageModule } from './storage/storage.module';
 import { AdsModule } from './ads/ads.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { AppSettingsModule } from './app-settings/app-settings.module';
+import { CommonModule } from './common/common.module';
 
 @Module({
   imports: [
@@ -23,6 +26,7 @@ import { AdsModule } from './ads/ads.module';
     MulterModule.register({
       dest: './uploads',
     }),
+    CommonModule,
     AuthModule,
     StudentsModule,
     CoursesModule,
@@ -34,6 +38,8 @@ import { AdsModule } from './ads/ads.module';
     SeedModule,
     StorageModule,
     AdsModule,
+    NotificationsModule,
+    AppSettingsModule,
   ],
 })
 export class AppModule { }

@@ -1,4 +1,18 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query, UseInterceptors, UploadedFiles, BadRequestException, ParseEnumPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  UseGuards,
+  Query,
+  UseInterceptors,
+  UploadedFiles,
+  BadRequestException,
+  ParseEnumPipe,
+} from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { CoursesService, CoverSize } from './courses.service';
 import { imageUploadOptions } from 'src/common/utils/image-upload';
@@ -9,16 +23,21 @@ import { GetStudentId, GetUser } from 'src/common/decorator';
 import { Roles } from 'src/common/decorator/roles.decorator';
 import { Role } from 'src/common/enums/role.enum';
 import { RolesGuard } from 'src/common/guards/roles.guard';
+import { CourseAccessService } from 'src/common/services/course-access.service';
+import { getUserId } from 'src/common/utils/access.util';
 
 @Controller('courses')
 export class CoursesController {
-  constructor(private readonly coursesService: CoursesService) { }
+  constructor(
+    private readonly coursesService: CoursesService,
+    private readonly courseAccess: CourseAccessService,
+  ) {}
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Post()
   @Roles(Role.Teacher, Role.Owner)
   create(@Body() createCourseDto: CreateCourseDto, @GetUser() user: any) {
-    const teacherId = user?.sub || user?._id || user?._doc?._id;
+    const teacherId = getUserId(user);
     return this.coursesService.create({ ...createCourseDto, teacher: teacherId });
   }
 
@@ -28,12 +47,12 @@ export class CoursesController {
     @GetStudentId() studentId: string,
     @Query('year') year?: number,
     @Query('semester') semester?: number,
-    @Query('major') major?: string
+    @Query('major') major?: string,
   ) {
     return this.coursesService.getCoursesWithAvailability(studentId, {
       year,
       semester,
-      major
+      major,
     });
   }
 
@@ -41,11 +60,10 @@ export class CoursesController {
   @Get('mine/with-counts')
   @Roles(Role.Teacher, Role.Owner)
   async getMineWithCounts(@GetUser() user: any) {
-    const teacherId = user?.sub || user?._id || user?._doc?._id;
+    const teacherId = getUserId(user);
     const isOwner = user?.role === Role.Owner;
     return this.coursesService.findMineWithEnrollmentCounts(teacherId, isOwner);
   }
-
 
   @UseGuards(JwtAuthGuard)
   @Get()
@@ -58,7 +76,7 @@ export class CoursesController {
   findAllByYearAndSemester(
     @Query('year') year: number,
     @Query('semester') semester: number,
-    @Query('major') major: string
+    @Query('major') major: string,
   ) {
     return this.coursesService.findAllByYearAndSemester(+year, +semester, major);
   }
@@ -69,9 +87,15 @@ export class CoursesController {
     return this.coursesService.findOne(id);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateCourseDto: UpdateCourseDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() updateCourseDto: UpdateCourseDto,
+    @GetUser() user: any,
+  ) {
+    await this.courseAccess.assertCanManageCourse(user, id);
     return this.coursesService.update(id, updateCourseDto);
   }
 
@@ -87,10 +111,13 @@ export class CoursesController {
       imageUploadOptions,
     ),
   )
-  uploadCovers(
+  async uploadCovers(
     @Param('id') id: string,
-    @UploadedFiles() files: { coverSmall?: Express.Multer.File[]; coverLarge?: Express.Multer.File[] },
+    @UploadedFiles()
+    files: { coverSmall?: Express.Multer.File[]; coverLarge?: Express.Multer.File[] },
+    @GetUser() user: any,
   ) {
+    await this.courseAccess.assertCanManageCourse(user, id);
     if (!files?.coverSmall?.length && !files?.coverLarge?.length) {
       throw new BadRequestException('يرجى رفع صورة الغلاف الصغيرة أو الكبيرة');
     }
@@ -103,17 +130,20 @@ export class CoursesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Teacher, Role.Owner)
   @Delete(':id/covers/:size')
-  removeCover(
+  async removeCover(
     @Param('id') id: string,
     @Param('size', new ParseEnumPipe(['small', 'large'])) size: CoverSize,
+    @GetUser() user: any,
   ) {
+    await this.courseAccess.assertCanManageCourse(user, id);
     return this.coursesService.removeCover(id, size);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Delete(':id')
-  remove(@Param('id') id: string) {
+  async remove(@Param('id') id: string, @GetUser() user: any) {
+    await this.courseAccess.assertCanManageCourse(user, id);
     return this.coursesService.remove(id);
   }
 }
-

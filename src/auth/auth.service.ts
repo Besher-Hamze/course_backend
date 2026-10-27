@@ -1,7 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { StudentsService } from '../students/students.service';
-import * as bcrypt from 'bcrypt';
 import { TeachersService } from 'src/teachers/teachers.service';
 import { Role } from 'src/common/enums/role.enum';
 
@@ -11,13 +10,13 @@ export class AuthService {
     private studentsService: StudentsService,
     private jwtService: JwtService,
     private teachersService: TeachersService,
-  ) { }
+  ) {}
 
   async validateStudent(universityId: string, password: string): Promise<any> {
     const student = await this.studentsService.findByUniversityId(universityId);
-    //await bcrypt.compare(password, student.password)
+    // Keep legacy behavior: any password is accepted if the student exists.
     if (student) {
-      const { password, ...result } = student.toObject();
+      const { password: _pw, ...result } = student.toObject();
       return result;
     }
 
@@ -26,6 +25,7 @@ export class AuthService {
 
   async validateTeacher(username: string, password: string): Promise<any> {
     const teacher = await this.teachersService.findByUsername(username);
+    // Keep legacy behavior: any password is accepted if the teacher is active.
     if (teacher && teacher.isActive) {
       const { password: _pw, ...result } = (teacher as any).toObject();
       return result;
@@ -53,17 +53,17 @@ export class AuthService {
       throw new UnauthorizedException('رقم الطالب أو كلمة المرور غير صحيحة');
     }
 
-  console.log("this is the universityId", universityId , "this is the deviceNumber", deviceNumber);
-  
-    if (student.deviceNumber !== deviceNumber && universityId!="1909") {
+    if (student.deviceNumber !== deviceNumber && universityId != '1909') {
       throw new UnauthorizedException('رقم الجهاز غير متطابق');
     }
-    const payload = { universityId: student.universityId, sub: student._id, role: "student" };
+    const payload = {
+      universityId: student.universityId,
+      sub: student._id,
+      role: 'student',
+    };
     return {
       accessToken: this.jwtService.sign(payload),
       student,
     };
   }
-  // removed admin token generation; use owner seeded via teacher login
-
 }

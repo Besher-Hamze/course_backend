@@ -17,7 +17,9 @@ import { TeachersModule } from 'src/teachers/teachers.module';
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         secret: configService.get<string>('JWT_SECRET'),
-        signOptions: {},
+        // Long-lived so students are not forced to re-login after app updates,
+        // but tokens do expire (was previously ignoreExpiration: true).
+        signOptions: { expiresIn: '180d' },
       }),
       inject: [ConfigService],
     }),

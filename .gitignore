@@ -42,6 +42,14 @@ lerna-debug.log*
 .env.production.local
 .env.local
 
+# Firebase / secrets (never commit private keys)
+/secrets/**
+!/secrets/README.md
+**/firebase-adminsdk*.json
+**/google-services.json
+**/GoogleService-Info.plist
+prime-course-*.json
+
 # temp directory
 .temp
 .tmp

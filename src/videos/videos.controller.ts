@@ -1,20 +1,21 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query, UseInterceptors, UploadedFile, Res, Header, HttpStatus, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
-import { Response, Request } from 'express';
-import * as fs from 'fs';
-import * as path from 'path';
-import { stat, access, mkdir } from 'fs/promises';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query, UseInterceptors, UploadedFile, Res, HttpStatus, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Response } from 'express';
 import { VideosService } from './videos.service';
 import { StorageService } from 'src/storage/storage.service';
 import { CreateVideoDto } from './dto/create-video.dto';
 import { UpdateVideoDto } from './dto/update-video.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
 import { extname } from 'path';
 import * as crypto from 'crypto';
 import { EnrollmentsService } from 'src/enrollments/enrollments.service';
 import { GetUser } from 'src/common/decorator';
 import { getStudentId, toPlain } from 'src/common/utils/user.util';
+import { RolesGuard } from 'src/common/guards/roles.guard';
+import { Roles } from 'src/common/decorator/roles.decorator';
+import { Role } from 'src/common/enums/role.enum';
+import { CourseAccessService } from 'src/common/services/course-access.service';
+import { isStaff } from 'src/common/utils/access.util';
 
 interface UploadSession {
   id: string;
@@ -39,6 +40,7 @@ export class VideosController {
     private readonly videosService: VideosService,
     private readonly storage: StorageService,
     private readonly enrollmentsService: EnrollmentsService,
+    private readonly courseAccess: CourseAccessService,
   ) {
     // Clean up old upload sessions every hour
     setInterval(() => this.cleanupOldSessions(), 60 * 60 * 1000);
@@ -49,10 +51,24 @@ export class VideosController {
 
   private async ensureUploadDirectories() { /* no-op: using Backblaze storage */ }
 
+  private courseIdsFromDto(dto: { course?: string; courses?: string[] }): string[] {
+    return [...new Set([...(dto.courses ?? []), ...(dto.course ? [dto.course] : [])])];
+  }
+
+  private async assertCanManageVideo(user: any, videoId: string) {
+    const video = await this.videosService.findOne(videoId);
+    const courseId = ((video as any).course?._id ?? (video as any).course).toString();
+    await this.courseAccess.assertCanManageCourse(user, courseId);
+    return video;
+  }
+
   private async assertCanWatch(user: any, video: any) {
+    if (isStaff(user)) {
+      return;
+    }
     const studentId = getStudentId(user);
     if (!studentId) {
-      return;
+      throw new ForbiddenException('غير مصرح');
     }
     const courseId = (video.course?._id ?? video.course).toString();
     const freeVideoId = await this.videosService.getFreeVideoId(courseId);
@@ -77,7 +93,8 @@ export class VideosController {
     }
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Post('upload/init')
   async initializeUpload(@Body() body: { filename: string; fileSize: number; contentType?: string }) {
     try {
@@ -132,7 +149,8 @@ export class VideosController {
     }
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Post('upload/chunk/:sessionId')
   @UseInterceptors(
     FileInterceptor('chunk', {
@@ -196,14 +214,24 @@ export class VideosController {
     }
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Post('upload/complete/:sessionId')
-  async completeUpload(@Param('sessionId') sessionId: string, @Body() createVideoDto: CreateVideoDto) {
+  async completeUpload(
+    @Param('sessionId') sessionId: string,
+    @Body() createVideoDto: CreateVideoDto,
+    @GetUser() user: any,
+  ) {
     try {
       const session = this.uploadSessions.get(sessionId);
       if (!session) {
         throw new BadRequestException('Invalid or expired upload session');
       }
+
+      await this.courseAccess.assertCanManageCourses(
+        user,
+        this.courseIdsFromDto(createVideoDto),
+      );
 
       // Verify all chunks are uploaded
       const expectedChunks = Math.ceil(session.totalSize / this.UPLOAD_CHUNK_SIZE);
@@ -225,8 +253,7 @@ export class VideosController {
       const objectKey = `videos/${finalFilename}`;
       await this.storage.upload(objectKey, fileBuffer, contentType);
 
-      // Create video record storing the object key
-      const video = await this.videosService.create({
+      const videos = await this.videosService.create({
         ...createVideoDto,
         filePath: objectKey,
       });
@@ -234,11 +261,12 @@ export class VideosController {
       // Clean up session
       this.uploadSessions.delete(sessionId);
 
-      this.logger.log(`Upload completed for session ${sessionId}: ${session.filename}`);
+      this.logger.log(`Upload completed for session ${sessionId}: ${session.filename} -> ${videos.length} course(s)`);
 
       return {
         success: true,
-        video,
+        video: videos[0],
+        videos,
         message: 'Video uploaded successfully'
       };
     } catch (error) {
@@ -247,7 +275,8 @@ export class VideosController {
     }
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Get('upload/status/:sessionId')
   getUploadStatus(@Param('sessionId') sessionId: string) {
     const session = this.uploadSessions.get(sessionId);
@@ -270,7 +299,8 @@ export class VideosController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Delete('upload/cancel/:sessionId')
   cancelUpload(@Param('sessionId') sessionId: string) {
     const session = this.uploadSessions.get(sessionId);
@@ -284,10 +314,19 @@ export class VideosController {
   }
 
   // Original endpoints with enhanced streaming
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Post()
   @UseInterceptors(FileInterceptor('file'))
-  async create(@UploadedFile() file: Express.Multer.File, @Body() createVideoDto: CreateVideoDto) {
+  async create(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() createVideoDto: CreateVideoDto,
+    @GetUser() user: any,
+  ) {
+    await this.courseAccess.assertCanManageCourses(
+      user,
+      this.courseIdsFromDto(createVideoDto),
+    );
     const randomName = Array(32)
       .fill(null)
       .map(() => Math.round(Math.random() * 16).toString(16))
@@ -300,7 +339,8 @@ export class VideosController {
     });
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Get()
   findAll() {
     return this.videosService.findAll();
@@ -312,7 +352,9 @@ export class VideosController {
     const videos = await this.videosService.findAllByCourse(courseId);
     const studentId = getStudentId(user);
     const freeVideoId = await this.videosService.getFreeVideoId(courseId);
-    const isEnrolled = studentId ? await this.enrollmentsService.hasActiveEnrollment(studentId, courseId) : true;
+    const isEnrolled = studentId
+      ? await this.enrollmentsService.hasActiveEnrollment(studentId, courseId)
+      : isStaff(user);
 
     return videos.map((video) => {
       const isFree = video._id.toString() === freeVideoId;
@@ -322,8 +364,10 @@ export class VideosController {
 
   @UseGuards(JwtAuthGuard)
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.videosService.findOne(id);
+  async findOne(@Param('id') id: string, @GetUser() user: any) {
+    const video = await this.videosService.findOne(id);
+    await this.assertCanWatch(user, video);
+    return video;
   }
 
   @UseGuards(JwtAuthGuard)
@@ -335,15 +379,23 @@ export class VideosController {
     return { url };
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateVideoDto: UpdateVideoDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() updateVideoDto: UpdateVideoDto,
+    @GetUser() user: any,
+  ) {
+    await this.assertCanManageVideo(user, id);
     return this.videosService.update(id, updateVideoDto);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Teacher, Role.Owner)
   @Delete(':id')
-  remove(@Param('id') id: string) {
+  async remove(@Param('id') id: string, @GetUser() user: any) {
+    await this.assertCanManageVideo(user, id);
     return this.videosService.remove(id);
   }
 

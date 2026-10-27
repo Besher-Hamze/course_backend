@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Video, VideoDocument } from './schemas/video.schema';
@@ -11,9 +11,16 @@ export class VideosService {
     @InjectModel(Video.name) private videoModel: Model<VideoDocument>,
   ) { }
 
-  async create(createVideoDto: CreateVideoDto): Promise<Video> {
-    const newVideo = new this.videoModel(createVideoDto);
-    return newVideo.save();
+  /** One video record per course; all records share the same stored file. */
+  async create(createVideoDto: CreateVideoDto): Promise<VideoDocument[]> {
+    const { course, courses, ...rest } = createVideoDto;
+    const courseIds = [...new Set([...(courses ?? []), ...(course ? [course] : [])])];
+    if (!courseIds.length) {
+      throw new BadRequestException('يجب اختيار كورس واحد على الأقل');
+    }
+    return this.videoModel.insertMany(
+      courseIds.map((courseId) => ({ ...rest, course: new Types.ObjectId(courseId) })),
+    ) as unknown as Promise<VideoDocument[]>;
   }
 
   async findAll(): Promise<Video[]> {
@@ -57,8 +64,9 @@ export class VideosService {
   }
 
   async update(id: string, updateVideoDto: UpdateVideoDto): Promise<Video> {
+    const { courses, ...changes } = updateVideoDto;
     const updatedVideo = await this.videoModel
-      .findByIdAndUpdate(id, updateVideoDto, { new: true })
+      .findByIdAndUpdate(id, changes, { new: true })
       .exec();
 
     if (!updatedVideo) {
